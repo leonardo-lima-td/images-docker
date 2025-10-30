@@ -1,0 +1,69 @@
+FROM jgoerzen/debian-base-vnc:latest-linux_amd64
+
+# Definir variáveis
+ENV USER_ID=1001 \
+    USER_NAME=speduser \
+    HOME=/home/speduser \
+    LANG=pt_BR.UTF-8 \
+    LANGUAGE=pt_BR:pt \
+    LC_ALL=pt_BR.UTF-8 
+
+# Configurar senha do root
+RUN echo "root:rootpas123" | chpasswd
+
+# Instalar dependências base em uma única camada
+RUN apt-get update && apt-get install -y \
+    bash \
+    curl \
+    wget \
+    ca-certificates \
+    xdotool \
+    fontconfig \
+    fonts-dejavu 
+
+# Criar usuário 1001
+RUN useradd -u ${USER_ID} -m -d ${HOME} -s /bin/bash ${USER_NAME} \
+    && mkdir -p ${HOME}/.cache ${HOME}/.config ${HOME}/.local
+
+# Copiar e instalar fontes Microsoft TrueType Core Fonts
+COPY ./msttcorefonts /usr/share/fonts/truetype/msttcorefonts/
+RUN fc-cache -f -v
+
+WORKDIR ${HOME}
+COPY ./EFD-Contribuicoes_linux_x86_64-6.1.0.sh ${HOME}/EFD-Contribuicoes_linux_x86_64-6.1.0.sh
+RUN chmod +x ${HOME}/EFD-Contribuicoes_linux_x86_64-6.1.0.sh && \
+    chown ${USER_ID}:${USER_ID} ${HOME}/EFD-Contribuicoes_linux_x86_64-6.1.0.sh ${HOME}/
+
+# Mudar para usuário não-root para instalação
+USER ${USER_ID}
+WORKDIR ${HOME}
+
+# Instalar SPED Contribuições
+# Respostas automáticas:
+# o     - Confirmar diretório de instalação
+# \n    - Enter (usar diretório padrão)
+# y     - Aceitar termos de uso
+# n     - Não criar link simbólico
+# n     - Não executar agora
+RUN printf "o\n\ny\nn\n" | ${HOME}/EFD-Contribuicoes_linux_x86_64-6.1.0.sh -c \
+    && echo "SPED Contribuições instalado com sucesso"
+
+# Voltar para root para ajustes finais
+USER root
+
+# Ajustar permissões e limpar arquivos temporários
+RUN chown -R ${USER_ID}:${USER_ID} ${HOME} \
+    && chmod -R 755 ${HOME}/.cache ${HOME}/.config ${HOME}/.local ${HOME}/.tmp 2>/dev/null || true \
+    && rm -f ${HOME}/EFD-Contribuicoes_linux_x86_64-6.1.0.sh 
+
+# Verificar instalação xdotool
+RUN which xdotool
+
+# Finalizar com usuário não-root
+USER ${USER_ID}
+WORKDIR ${HOME}
+
+
+# Comando padrão
+CMD ["/bin/bash"]
+

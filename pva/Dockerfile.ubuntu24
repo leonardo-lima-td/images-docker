@@ -1,0 +1,162 @@
+FROM ubuntu:24.04
+
+# Definir variáveis
+ENV USER_ID=1001 \
+    USER_NAME=speduser \
+    HOME=/home/speduser \
+    LANG=pt_BR.UTF-8 \
+    LANGUAGE=pt_BR:pt \
+    LC_ALL=pt_BR.UTF-8 \
+    DEBIAN_FRONTEND=noninteractive \
+    VNC_PORT=5901 \
+    DISPLAY=:1 \
+    VNC_RESOLUTION=1280x720 \
+    VNC_COL_DEPTH=24
+
+# Configurar senha do root
+RUN echo "root:rootpas123" | chpasswd
+
+# Atualizar e instalar pacotes base
+RUN apt-get update && apt-get install -y \
+    # Utilitários básicos
+    bash \
+    curl \
+    wget \
+    ca-certificates \
+    locales \
+    # Java
+    openjdk-17-jre \
+    # X11 e ferramentas
+    xdotool \
+    x11vnc \
+    xvfb \
+    # MATE Desktop
+    mate-desktop-environment-core \
+    mate-desktop-environment-extras \
+    mate-themes \
+    mate-icon-theme \
+    # VNC Server
+    tigervnc-standalone-server \
+    tigervnc-common \
+    # Fontes
+    fontconfig \
+    fonts-liberation \
+    # Outros
+    net-tools \
+    sudo \
+    procps \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configurar locale pt_BR
+RUN locale-gen pt_BR.UTF-8 && \
+    update-locale LANG=pt_BR.UTF-8 LC_ALL=pt_BR.UTF-8
+
+# Copiar e instalar fontes Microsoft TrueType Core Fonts
+COPY ./msttcorefonts /usr/share/fonts/truetype/msttcorefonts/
+RUN fc-cache -f -v
+
+# Criar usuário
+RUN useradd -m -u ${USER_ID} -s /bin/bash ${USER_NAME} && \
+    echo "${USER_NAME}:spedpass123" | chpasswd && \
+    mkdir -p ${HOME}/.cache ${HOME}/.config ${HOME}/.local ${HOME}/.vnc && \
+    echo "${USER_NAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Configurar VNC password para o usuário
+RUN mkdir -p ${HOME}/.vnc && \
+    echo "spedpass123" | vncpasswd -f > ${HOME}/.vnc/passwd && \
+    chmod 600 ${HOME}/.vnc/passwd && \
+    chown -R ${USER_ID}:${USER_ID} ${HOME}/.vnc
+
+# Criar arquivo xstartup para VNC
+RUN echo "#!/bin/bash" > ${HOME}/.vnc/xstartup && \
+    echo "unset SESSION_MANAGER" >> ${HOME}/.vnc/xstartup && \
+    echo "unset DBUS_SESSION_BUS_ADDRESS" >> ${HOME}/.vnc/xstartup && \
+    echo "export XKL_XMODMAP_DISABLE=1" >> ${HOME}/.vnc/xstartup && \
+    echo "export XDG_CURRENT_DESKTOP=MATE" >> ${HOME}/.vnc/xstartup && \
+    echo "export DESKTOP_SESSION=mate" >> ${HOME}/.vnc/xstartup && \
+    echo "exec mate-session" >> ${HOME}/.vnc/xstartup && \
+    chmod +x ${HOME}/.vnc/xstartup && \
+    chown ${USER_ID}:${USER_ID} ${HOME}/.vnc/xstartup
+
+# Copiar instalador SPED
+WORKDIR ${HOME}
+COPY ./EFD-Contribuicoes_linux_x86_64-6.1.0.sh ${HOME}/EFD-Contribuicoes_linux_x86_64-6.1.0.sh
+RUN chmod +x EFD-Contribuicoes_linux_x86_64-6.1.0.sh && \
+    chown ${USER_ID}:${USER_ID} EFD-Contribuicoes_linux_x86_64-6.1.0.sh
+
+# Mudar para usuário não-root para instalação do SPED
+USER ${USER_ID}
+WORKDIR ${HOME}
+
+# Instalar SPED Contribuições
+# Respostas automáticas:
+# o     - Confirmar diretório de instalação
+# \n    - Enter (usar diretório padrão)
+# y     - Aceitar termos de uso
+# n     - Não criar link simbólico
+# n     - Não executar agora
+RUN printf "o\n\ny\nn\n" | ${HOME}/EFD-Contribuicoes_linux_x86_64-6.1.0.sh -c \
+    && echo "SPED Contribuições instalado com sucesso"
+
+# Voltar para root para configurações finais
+USER root
+
+# Ajustar permissões
+RUN chown -R ${USER_ID}:${USER_ID} ${HOME} && \
+    chmod -R 755 ${HOME}/.cache ${HOME}/.config ${HOME}/.local 2>/dev/null || true && \
+    rm -f ${HOME}/EFD-Contribuicoes_linux_x86_64-6.1.0.sh
+
+# Criar script de inicialização simples (mais leve que supervisord)
+RUN echo "#!/bin/bash" > /usr/local/bin/start-vnc.sh && \
+    echo "set -e" >> /usr/local/bin/start-vnc.sh && \
+    echo "" >> /usr/local/bin/start-vnc.sh && \
+    echo "# Função para limpar ao sair" >> /usr/local/bin/start-vnc.sh && \
+    echo "cleanup() {" >> /usr/local/bin/start-vnc.sh && \
+    echo "    echo 'Parando VNC server...'" >> /usr/local/bin/start-vnc.sh && \
+    echo "    su - ${USER_NAME} -c 'vncserver -kill ${DISPLAY}' 2>/dev/null || true" >> /usr/local/bin/start-vnc.sh && \
+    echo "    exit 0" >> /usr/local/bin/start-vnc.sh && \
+    echo "}" >> /usr/local/bin/start-vnc.sh && \
+    echo "" >> /usr/local/bin/start-vnc.sh && \
+    echo "# Capturar sinais para cleanup" >> /usr/local/bin/start-vnc.sh && \
+    echo "trap cleanup SIGTERM SIGINT SIGQUIT" >> /usr/local/bin/start-vnc.sh && \
+    echo "" >> /usr/local/bin/start-vnc.sh && \
+    echo "# Limpar qualquer sessão VNC anterior" >> /usr/local/bin/start-vnc.sh && \
+    echo "rm -rf /tmp/.X${DISPLAY#:}-lock /tmp/.X11-unix/X${DISPLAY#:} 2>/dev/null || true" >> /usr/local/bin/start-vnc.sh && \
+    echo "" >> /usr/local/bin/start-vnc.sh && \
+    echo "# Iniciar VNC server como usuário speduser" >> /usr/local/bin/start-vnc.sh && \
+    echo "echo 'Iniciando VNC server na porta ${VNC_PORT}...'" >> /usr/local/bin/start-vnc.sh && \
+    echo "su - ${USER_NAME} -c 'vncserver ${DISPLAY} -geometry ${VNC_RESOLUTION} -depth ${VNC_COL_DEPTH} -localhost no -SecurityTypes None'" >> /usr/local/bin/start-vnc.sh && \
+    echo "" >> /usr/local/bin/start-vnc.sh && \
+    echo "echo '================================='" >> /usr/local/bin/start-vnc.sh && \
+    echo "echo 'VNC Server iniciado com sucesso!'" >> /usr/local/bin/start-vnc.sh && \
+    echo "echo 'Conecte-se em: localhost:${VNC_PORT}'" >> /usr/local/bin/start-vnc.sh && \
+    echo "echo 'Senha: spedpass123'" >> /usr/local/bin/start-vnc.sh && \
+    echo "echo '================================='" >> /usr/local/bin/start-vnc.sh && \
+    echo "" >> /usr/local/bin/start-vnc.sh && \
+    echo "# Manter o container rodando e monitorar o processo VNC" >> /usr/local/bin/start-vnc.sh && \
+    echo "while true; do" >> /usr/local/bin/start-vnc.sh && \
+    echo "    if ! pgrep -u ${USER_NAME} Xvnc > /dev/null; then" >> /usr/local/bin/start-vnc.sh && \
+    echo "        echo 'VNC server parou. Reiniciando...'" >> /usr/local/bin/start-vnc.sh && \
+    echo "        su - ${USER_NAME} -c 'vncserver ${DISPLAY} -geometry ${VNC_RESOLUTION} -depth ${VNC_COL_DEPTH} -localhost no -SecurityTypes None'" >> /usr/local/bin/start-vnc.sh && \
+    echo "    fi" >> /usr/local/bin/start-vnc.sh && \
+    echo "    sleep 5" >> /usr/local/bin/start-vnc.sh && \
+    echo "done" >> /usr/local/bin/start-vnc.sh && \
+    chmod +x /usr/local/bin/start-vnc.sh
+
+# Verificar instalação Java
+RUN java -version
+
+# Verificar instalação xdotool
+RUN which xdotool
+
+# Expor porta VNC
+EXPOSE ${VNC_PORT}
+
+# Finalizar com usuário não-root
+USER ${USER_ID}
+WORKDIR ${HOME}
+
+# Comando padrão - iniciar script simples de VNC
+USER root
+CMD ["/usr/local/bin/start-vnc.sh"]
